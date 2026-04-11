@@ -221,6 +221,12 @@ func parseSSHDLine(line, logPath string) *IngestPayload {
 // sendEvent POSTs a single event to the LiteSOC Ingestion API.
 // The API key is transmitted only in the request header — never logged.
 func (lt *LogTailer) sendEvent(ctx context.Context, payload *IngestPayload) error {
+	// Stamp source hostname so the dashboard can show which server sent the event.
+	if payload.Metadata == nil {
+		payload.Metadata = make(map[string]any)
+	}
+	payload.Metadata["source_hostname"] = getHostname()
+
 	body, err := marshalJSON(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)

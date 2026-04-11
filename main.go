@@ -127,9 +127,15 @@ func sendHeartbeat(ctx context.Context, cfg *Config, apiKey string, client *http
 			slog.Info("heartbeat: dashboard-triggered update received",
 				"current", agentVersion,
 				"target", hbResp.Update.LatestVersion,
+				"url", hbResp.Update.DownloadURL,
 			)
 			if err := selfUpdate(hbResp.Update); err != nil {
-				slog.Error("self-update failed", "error", err)
+				slog.Error("self-update failed",
+					"error", err,
+					"current", agentVersion,
+					"target", hbResp.Update.LatestVersion,
+					"url", hbResp.Update.DownloadURL,
+				)
 			}
 		} else if hbResp.Update != nil && hbResp.Update.Available {
 			slog.Info("heartbeat: update available (waiting for dashboard trigger)",

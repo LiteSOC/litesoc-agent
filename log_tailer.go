@@ -131,6 +131,7 @@ func (lt *LogTailer) Run(ctx context.Context) error {
 				continue
 			}
 			if event := lt.parseLine(line.Text); event != nil {
+				pushRecentLog(line.Text)
 				if err := lt.sendEvent(ctx, event); err != nil {
 					slog.Warn("failed to send event",
 						"event", event.Event,

@@ -91,11 +91,11 @@ var selfUpdate = func(info *updateInfo) error {
 	}
 	defer os.Remove(stagePath)
 
-	currentBinary, err := os.Executable()
+	currentBinary, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve current binary path: %w", err)
 	}
-	currentBinary, err = filepath.EvalSymlinks(currentBinary)
+	currentBinary, err = evalSymlinks(currentBinary)
 	if err != nil {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
@@ -107,8 +107,8 @@ var selfUpdate = func(info *updateInfo) error {
 	)
 
 	// Privileged copy — needs: litesoc ALL=(root) NOPASSWD: /usr/bin/cp /tmp/litesoc-agent-update <dest>
-	if out, err := exec.Command("sudo", "cp", stagePath, currentBinary).CombinedOutput(); err != nil {
-		return fmt.Errorf("replace binary (sudo cp): %w: %s", err, strings.TrimSpace(string(out)))
+	if err := installBinary(stagePath, currentBinary); err != nil {
+		return err
 	}
 
 	// 6. Restart via systemctl — this kills the current process.
@@ -125,6 +125,18 @@ var restartService = func() error {
 	}
 	return nil
 }
+
+var (
+	osExecutable  = os.Executable
+	evalSymlinks  = filepath.EvalSymlinks
+	installBinary = func(stagePath, destPath string) error {
+		out, err := exec.Command("sudo", "cp", stagePath, destPath).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("replace binary (sudo cp): %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+)
 
 // downloadFile fetches a URL and writes it to disk.
 func downloadFile(client *http.Client, url, dest string) error {

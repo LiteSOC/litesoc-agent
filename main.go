@@ -25,6 +25,10 @@ var (
 	osExit       = os.Exit
 	marshalJSON  = json.Marshal
 	signalNotify = signal.Notify
+	osHostname   = os.Hostname
+	netDial      = func() (net.Conn, error) {
+		return net.DialTimeout("udp", "8.8.8.8:80", 2*time.Second)
+	}
 )
 
 // Config holds the full agent configuration loaded from config.yaml.
@@ -60,14 +64,48 @@ func loadConfig(path string) (*Config, error) {
 
 // heartbeatPayload is the body sent to /agent/heartbeat.
 type heartbeatPayload struct {
-	Hostname     string `json:"hostname"`
-	IPAddress    string `json:"ip_address"`
-	AgentVersion string `json:"agent_version"`
+	Hostname     string   `json:"hostname"`
+	IPAddress    string   `json:"ip_address"`
+	AgentVersion string   `json:"agent_version"`
+	RecentLogs   []string `json:"recent_logs,omitempty"`
+}
+
+// ============================================
+// Recent-logs ring buffer (goroutine-safe)
+// ============================================
+
+const recentLogsCapacity = 10
+
+var recentLogsMu sync.Mutex
+var recentLogsBuf = make([]string, 0, recentLogsCapacity)
+
+// pushRecentLog appends a line to the ring buffer, evicting the oldest
+// entry when capacity is reached.
+func pushRecentLog(line string) {
+	recentLogsMu.Lock()
+	defer recentLogsMu.Unlock()
+	if len(recentLogsBuf) >= recentLogsCapacity {
+		recentLogsBuf = recentLogsBuf[1:]
+	}
+	recentLogsBuf = append(recentLogsBuf, line)
+}
+
+// drainRecentLogs returns a snapshot of the buffer and resets it.
+func drainRecentLogs() []string {
+	recentLogsMu.Lock()
+	defer recentLogsMu.Unlock()
+	if len(recentLogsBuf) == 0 {
+		return nil
+	}
+	snap := make([]string, len(recentLogsBuf))
+	copy(snap, recentLogsBuf)
+	recentLogsBuf = recentLogsBuf[:0]
+	return snap
 }
 
 // getHostname returns the machine hostname or "unknown" on error.
 func getHostname() string {
-	h, err := os.Hostname()
+	h, err := osHostname()
 	if err != nil {
 		return "unknown"
 	}
@@ -76,7 +114,7 @@ func getHostname() string {
 
 // getOutboundIP returns the preferred outbound IP address.
 func getOutboundIP() string {
-	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 2*time.Second)
+	conn, err := netDial()
 	if err != nil {
 		return "0.0.0.0"
 	}
@@ -90,6 +128,7 @@ func sendHeartbeat(ctx context.Context, cfg *Config, apiKey string, client *http
 		Hostname:     getHostname(),
 		IPAddress:    getOutboundIP(),
 		AgentVersion: agentVersion,
+		RecentLogs:   drainRecentLogs(),
 	}
 	body, err := marshalJSON(payload)
 	if err != nil {

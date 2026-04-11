@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -243,20 +244,17 @@ func TestRunHeartbeat_TickerFires(t *testing.T) {
 }
 
 func TestMain_MissingAPIKey(t *testing.T) {
-	orig := osExit
-	defer func() { osExit = orig }()
+	origExit := osExit
+	origArgs := os.Args
+	defer func() { osExit = origExit; os.Args = origArgs }()
 
 	var exitCode int
-	osExit = func(code int) {
-		exitCode = code
-		panic("osExit called")
-	}
+	osExit = func(code int) { exitCode = code }
 
 	t.Setenv("LITESOC_KEY", "")
-	func() {
-		defer func() { _ = recover() }()
-		main()
-	}()
+	os.Args = []string{"litesoc-agent"}
+
+	main()
 
 	if exitCode != 1 {
 		t.Errorf("exit code = %d; want 1", exitCode)
@@ -269,18 +267,12 @@ func TestMain_BadConfig(t *testing.T) {
 	defer func() { osExit = origExit; os.Args = origArgs }()
 
 	var exitCode int
-	osExit = func(code int) {
-		exitCode = code
-		panic("osExit called")
-	}
+	osExit = func(code int) { exitCode = code }
 
 	t.Setenv("LITESOC_KEY", "lsoc_live_testkey")
 	os.Args = []string{"cmd", "/nonexistent/path/config.yaml"}
 
-	func() {
-		defer func() { _ = recover() }()
-		main()
-	}()
+	main()
 
 	if exitCode != 1 {
 		t.Errorf("exit code = %d; want 1", exitCode)
@@ -300,11 +292,7 @@ func TestMain_DefaultConfigPath(t *testing.T) {
 		os.Args = origArgs
 	}()
 
-	var exitCalled bool
-	osExit = func(code int) {
-		exitCalled = true
-		panic("osExit called")
-	}
+	osExit = func(code int) {}
 	newTailSrc = mockFailingTailSrc
 	signalNotify = func(c chan<- os.Signal, _ ...os.Signal) {
 		go func() { time.Sleep(50 * time.Millisecond); c <- syscall.SIGTERM }()
@@ -313,13 +301,7 @@ func TestMain_DefaultConfigPath(t *testing.T) {
 	t.Setenv("LITESOC_KEY", "lsoc_live_testkey")
 	os.Args = []string{"litesoc-agent"} // no path arg — uses default /etc/litesoc/config.yaml
 
-	func() {
-		defer func() { _ = recover() }()
-		main()
-	}()
-	// If /etc/litesoc/config.yaml does not exist: osExit(1) is called (fine).
-	// If it does exist: main runs fully and returns after SIGTERM (also fine).
-	_ = exitCalled
+	main()
 }
 
 // TestMain_FullRun exercises the happy path: config loads, goroutines start,
@@ -350,4 +332,193 @@ func TestMain_FullRun(t *testing.T) {
 	os.Args = []string{"litesoc-agent", cfgPath}
 
 	main() // returns after SIGTERM received and all goroutines clean up.
+}
+
+// ============================================
+// --version flag
+// ============================================
+
+func TestMain_VersionFlag(t *testing.T) {
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+	os.Args = []string{"litesoc-agent", "--version"}
+	main() // prints version and returns
+}
+
+func TestMain_VersionFlagShort(t *testing.T) {
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+	os.Args = []string{"litesoc-agent", "-v"}
+	main()
+}
+
+// ============================================
+// Recent-logs ring buffer
+// ============================================
+
+func TestPushRecentLog_Eviction(t *testing.T) {
+	// Reset buffer.
+	recentLogsMu.Lock()
+	recentLogsBuf = recentLogsBuf[:0]
+	recentLogsMu.Unlock()
+
+	// Push 15 items — only the last 10 should survive.
+	for i := 0; i < 15; i++ {
+		pushRecentLog(fmt.Sprintf("line %d", i))
+	}
+
+	logs := drainRecentLogs()
+	if len(logs) != 10 {
+		t.Fatalf("len = %d; want 10", len(logs))
+	}
+	if logs[0] != "line 5" {
+		t.Errorf("first = %q; want 'line 5'", logs[0])
+	}
+	if logs[9] != "line 14" {
+		t.Errorf("last = %q; want 'line 14'", logs[9])
+	}
+}
+
+func TestDrainRecentLogs_Empty(t *testing.T) {
+	recentLogsMu.Lock()
+	recentLogsBuf = recentLogsBuf[:0]
+	recentLogsMu.Unlock()
+
+	if logs := drainRecentLogs(); logs != nil {
+		t.Errorf("expected nil for empty buffer, got %v", logs)
+	}
+}
+
+// ============================================
+// getHostname / getOutboundIP error paths
+// ============================================
+
+func TestGetHostname_Error(t *testing.T) {
+	orig := osHostname
+	defer func() { osHostname = orig }()
+	osHostname = func() (string, error) { return "", fmt.Errorf("hostname error") }
+
+	if got := getHostname(); got != "unknown" {
+		t.Errorf("getHostname() = %q; want 'unknown'", got)
+	}
+}
+
+func TestGetOutboundIP_Error(t *testing.T) {
+	orig := netDial
+	defer func() { netDial = orig }()
+	netDial = func() (net.Conn, error) { return nil, fmt.Errorf("no network") }
+
+	if got := getOutboundIP(); got != "0.0.0.0" {
+		t.Errorf("getOutboundIP() = %q; want '0.0.0.0'", got)
+	}
+}
+
+// ============================================
+// sendHeartbeat — update-response branches
+// ============================================
+
+func TestSendHeartbeat_UpdateForced(t *testing.T) {
+	origSelfUpdate := selfUpdate
+	defer func() { selfUpdate = origSelfUpdate }()
+
+	var updateCalled bool
+	selfUpdate = func(info *updateInfo) error {
+		updateCalled = true
+		return nil
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(heartbeatResponse{
+			Success: true,
+			Update: &updateInfo{
+				Available:     true,
+				LatestVersion: "2.0.0",
+				DownloadURL:   "http://example.com/agent.tar.gz",
+				Force:         true,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &Config{APIEndpoint: srv.URL, HeartbeatInterval: 60}
+	client := &http.Client{Timeout: 5 * time.Second}
+	sendHeartbeat(context.Background(), cfg, "key", client)
+
+	if !updateCalled {
+		t.Error("selfUpdate was not called for forced update")
+	}
+}
+
+func TestSendHeartbeat_UpdateForcedError(t *testing.T) {
+	origSelfUpdate := selfUpdate
+	defer func() { selfUpdate = origSelfUpdate }()
+
+	selfUpdate = func(info *updateInfo) error { return fmt.Errorf("update failed") }
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(heartbeatResponse{
+			Success: true,
+			Update: &updateInfo{
+				Available:     true,
+				LatestVersion: "2.0.0",
+				DownloadURL:   "http://example.com/agent.tar.gz",
+				Force:         true,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &Config{APIEndpoint: srv.URL, HeartbeatInterval: 60}
+	client := &http.Client{Timeout: 5 * time.Second}
+	sendHeartbeat(context.Background(), cfg, "key", client) // must not panic
+}
+
+func TestSendHeartbeat_UpdateAvailableNotForced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(heartbeatResponse{
+			Success: true,
+			Update: &updateInfo{
+				Available:     true,
+				LatestVersion: "2.0.0",
+				DownloadURL:   "http://example.com/agent.tar.gz",
+				Force:         false,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &Config{APIEndpoint: srv.URL, HeartbeatInterval: 60}
+	client := &http.Client{Timeout: 5 * time.Second}
+	sendHeartbeat(context.Background(), cfg, "key", client)
+}
+
+func TestSendHeartbeat_RecentLogsIncluded(t *testing.T) {
+	// Reset buffer.
+	recentLogsMu.Lock()
+	recentLogsBuf = recentLogsBuf[:0]
+	recentLogsMu.Unlock()
+
+	pushRecentLog("test log line 1")
+	pushRecentLog("test log line 2")
+
+	var received heartbeatPayload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{APIEndpoint: srv.URL, HeartbeatInterval: 60}
+	client := &http.Client{Timeout: 5 * time.Second}
+	sendHeartbeat(context.Background(), cfg, "key", client)
+
+	if len(received.RecentLogs) != 2 {
+		t.Fatalf("RecentLogs len = %d; want 2", len(received.RecentLogs))
+	}
+	if received.RecentLogs[0] != "test log line 1" {
+		t.Errorf("RecentLogs[0] = %q", received.RecentLogs[0])
+	}
 }

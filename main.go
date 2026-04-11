@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -59,11 +60,35 @@ func loadConfig(path string) (*Config, error) {
 
 // heartbeatPayload is the body sent to /agent/heartbeat.
 type heartbeatPayload struct {
+	Hostname     string `json:"hostname"`
+	IPAddress    string `json:"ip_address"`
 	AgentVersion string `json:"agent_version"`
+}
+
+// getHostname returns the machine hostname or "unknown" on error.
+func getHostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return h
+}
+
+// getOutboundIP returns the preferred outbound IP address.
+func getOutboundIP() string {
+	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 2*time.Second)
+	if err != nil {
+		return "0.0.0.0"
+	}
+	defer func() { _ = conn.Close() }()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
 }
 
 func sendHeartbeat(ctx context.Context, cfg *Config, apiKey string, client *http.Client) {
 	payload := heartbeatPayload{
+		Hostname:     getHostname(),
+		IPAddress:    getOutboundIP(),
 		AgentVersion: agentVersion,
 	}
 	body, err := marshalJSON(payload)

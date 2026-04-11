@@ -277,11 +277,14 @@ step "[4/4] Connection successful! Check your dashboard at litesoc.io"
 
 # Quick probe — POST to the heartbeat endpoint with the user's key to confirm
 # end-to-end connectivity. We don't fail the install if this check is slow.
+PROBE_HOSTNAME=$(hostname 2>/dev/null || echo "unknown")
+PROBE_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "0.0.0.0")
+[ -z "${PROBE_IP}" ] && PROBE_IP="0.0.0.0"
 HEARTBEAT_STATUS=$(curl -sSo /dev/null -w "%{http_code}" --max-time 8 \
   -X POST "https://api.litesoc.io/agent/heartbeat" \
   -H "X-API-Key: ${LITESOC_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"agent_version":"'"${RELEASE_VERSION}"'"}' 2>/dev/null || echo "000")
+  -d '{"hostname":"'"${PROBE_HOSTNAME}"'","ip_address":"'"${PROBE_IP}"'","agent_version":"'"${RELEASE_VERSION}"'"}' 2>/dev/null || echo "000")
 
 if [[ "${HEARTBEAT_STATUS}" == "200" || "${HEARTBEAT_STATUS}" == "202" ]]; then
   ok "Heartbeat acknowledged by LiteSOC (HTTP ${HEARTBEAT_STATUS})"

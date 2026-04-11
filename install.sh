@@ -174,6 +174,12 @@ else
   ok "System user '${AGENT_USER}' already exists"
 fi
 
+# Grant read access to /var/log/auth.log (owned by syslog:adm on Ubuntu/Debian).
+if getent group adm &>/dev/null; then
+  usermod -aG adm "${AGENT_USER}" 2>/dev/null || true
+  ok "Added '${AGENT_USER}' to 'adm' group (required for /var/log/auth.log access)"
+fi
+
 # Create config directory and store the key in an env file (chmod 600).
 mkdir -p "${CONFIG_DIR}"
 ROLLBACK_STEPS+=("rm -rf '${CONFIG_DIR}'")
@@ -224,6 +230,7 @@ StartLimitBurst=6
 Type=simple
 User=${AGENT_USER}
 Group=${AGENT_USER}
+SupplementaryGroups=adm
 
 # Load the API key from the protected env file — never embed it in the unit.
 EnvironmentFile=${CONFIG_DIR}/agent.env

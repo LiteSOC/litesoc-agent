@@ -38,7 +38,7 @@ A periodic heartbeat keeps your dashboard server status accurate and alerts you 
 ### One-Line Install (Linux)
 
 ```bash
-curl -sSL https://litesoc.io/install.sh | LITESOC_AGENT_KEY=lsoc_live_xxx bash
+curl -sSL https://litesoc.io/install.sh | LITESOC_KEY=lsoc_live_xxx bash
 ```
 
 The installer will:
@@ -61,7 +61,7 @@ The installer will:
 
 The agent reads `/etc/litesoc/config.yaml` at startup.
 
-> **Security note:** Your API key is **never** stored in the config file. It is read exclusively from the `LITESOC_AGENT_KEY` environment variable.
+> **Security note:** Your API key is **never** stored in the config file. It is read exclusively from the `LITESOC_KEY` environment variable.
 
 ```yaml
 # /etc/litesoc/config.yaml
@@ -115,7 +115,7 @@ make release-archives
 ### Manually
 
 ```bash
-export LITESOC_AGENT_KEY=lsoc_live_your_key
+export LITESOC_KEY=lsoc_live_your_key
 ./bin/litesoc-agent /etc/litesoc/config.yaml
 ```
 

@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # LiteSOC Agent — Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-# The LITESOC_AGENT_KEY is read from the environment variable of the same name.
+# The LITESOC_KEY is read from the environment variable of the same name.
 # Never put your key directly in this file.
 
 # Base URL for the LiteSOC API (no trailing slash).

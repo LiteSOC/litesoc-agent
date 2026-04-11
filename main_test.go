@@ -252,7 +252,7 @@ func TestMain_MissingAPIKey(t *testing.T) {
 		panic("osExit called")
 	}
 
-	t.Setenv("LITESOC_AGENT_KEY", "")
+	t.Setenv("LITESOC_KEY", "")
 	func() {
 		defer func() { _ = recover() }()
 		main()
@@ -274,7 +274,7 @@ func TestMain_BadConfig(t *testing.T) {
 		panic("osExit called")
 	}
 
-	t.Setenv("LITESOC_AGENT_KEY", "lsoc_live_testkey")
+	t.Setenv("LITESOC_KEY", "lsoc_live_testkey")
 	os.Args = []string{"cmd", "/nonexistent/path/config.yaml"}
 
 	func() {
@@ -310,7 +310,7 @@ func TestMain_DefaultConfigPath(t *testing.T) {
 		go func() { time.Sleep(50 * time.Millisecond); c <- syscall.SIGTERM }()
 	}
 
-	t.Setenv("LITESOC_AGENT_KEY", "lsoc_live_testkey")
+	t.Setenv("LITESOC_KEY", "lsoc_live_testkey")
 	os.Args = []string{"litesoc-agent"} // no path arg — uses default /etc/litesoc/config.yaml
 
 	func() {
@@ -346,7 +346,7 @@ func TestMain_FullRun(t *testing.T) {
 	cfgPath := writeTempConfig(t,
 		"api_endpoint: http://127.0.0.1:1\nheartbeat_interval: 60\nlog_watchers:\n  - path: /var/log/auth.log\n    type: sshd\n")
 
-	t.Setenv("LITESOC_AGENT_KEY", "lsoc_live_testkey")
+	t.Setenv("LITESOC_KEY", "lsoc_live_testkey")
 	os.Args = []string{"litesoc-agent", cfgPath}
 
 	main() // returns after SIGTERM received and all goroutines clean up.

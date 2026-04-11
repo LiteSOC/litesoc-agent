@@ -117,9 +117,9 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
-	apiKey := os.Getenv("LITESOC_AGENT_KEY")
+	apiKey := os.Getenv("LITESOC_KEY")
 	if apiKey == "" {
-		slog.Error("LITESOC_AGENT_KEY environment variable is not set")
+		slog.Error("LITESOC_KEY environment variable is not set")
 		osExit(1)
 		return
 	}

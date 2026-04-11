@@ -4,7 +4,7 @@
 # =============================================================================
 # Usage:
 #   curl -sSL https://get.litesoc.io/agent | \
-#     LITESOC_AGENT_KEY=lsoc_live_xxx \
+#     LITESOC_KEY=lsoc_live_xxx \
 #     bash
 #
 # The script will:
@@ -25,10 +25,10 @@ SERVICE_NAME="litesoc-agent"
 VERSION="${LITESOC_AGENT_VERSION:-latest}"
 
 # ── Validate required env vars ────────────────────────────────────────────────
-if [[ -z "${LITESOC_AGENT_KEY:-}" ]]; then
-  echo "ERROR: LITESOC_AGENT_KEY is not set." >&2
+if [[ -z "${LITESOC_KEY:-}" ]]; then
+  echo "ERROR: LITESOC_KEY is not set." >&2
   echo "       Export it before running:" >&2
-  echo "         export LITESOC_AGENT_KEY=lsoc_live_your_key" >&2
+  echo "         export LITESOC_KEY=lsoc_live_your_key" >&2
   exit 1
 fi
 
@@ -104,7 +104,7 @@ fi
 # ── Store agent key securely (chmod 600, root-only) ───────────────────────────
 echo "==> Writing agent key to ${CONFIG_DIR}/agent.env ..."
 sudo tee "${CONFIG_DIR}/agent.env" > /dev/null <<ENV
-LITESOC_AGENT_KEY=${LITESOC_AGENT_KEY}
+LITESOC_KEY=${LITESOC_KEY}
 ENV
 sudo chmod 600 "${CONFIG_DIR}/agent.env"
 sudo chown root:root "${CONFIG_DIR}/agent.env"

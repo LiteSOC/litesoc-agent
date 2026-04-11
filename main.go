@@ -115,6 +115,29 @@ func sendHeartbeat(ctx context.Context, cfg *Config, apiKey string, client *http
 	defer func() { _ = resp.Body.Close() }()
 
 	slog.Debug("heartbeat sent", "status", resp.StatusCode)
+
+	// Parse response for update instructions.
+	if resp.StatusCode == http.StatusOK {
+		var hbResp heartbeatResponse
+		if err := json.NewDecoder(resp.Body).Decode(&hbResp); err != nil {
+			slog.Debug("heartbeat: failed to parse response", "error", err)
+			return
+		}
+		if hbResp.Update != nil && hbResp.Update.Available && hbResp.Update.Force {
+			slog.Info("heartbeat: dashboard-triggered update received",
+				"current", agentVersion,
+				"target", hbResp.Update.LatestVersion,
+			)
+			if err := selfUpdate(hbResp.Update); err != nil {
+				slog.Error("self-update failed", "error", err)
+			}
+		} else if hbResp.Update != nil && hbResp.Update.Available {
+			slog.Info("heartbeat: update available (waiting for dashboard trigger)",
+				"current", agentVersion,
+				"latest", hbResp.Update.LatestVersion,
+			)
+		}
+	}
 }
 
 func runHeartbeat(ctx context.Context, cfg *Config, apiKey string) {

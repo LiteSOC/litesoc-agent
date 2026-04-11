@@ -1,0 +1,31 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LiteSOC Agent — Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# The LITESOC_AGENT_KEY is read from the environment variable of the same name.
+# Never put your key directly in this file.
+
+# Base URL for the LiteSOC API (no trailing slash).
+api_endpoint: https://api.litesoc.io
+
+# How often (in seconds) the agent sends a heartbeat ping to LiteSOC.
+# The dashboard uses this to show the server as "Active". (Default: 60)
+heartbeat_interval: 60
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Log files to monitor.
+# Each entry needs:
+#   path — absolute path to the log file.
+#   type — parser to use. Currently supported: "sshd"
+# ─────────────────────────────────────────────────────────────────────────────
+log_watchers:
+  # Debian / Ubuntu
+  - path: /var/log/auth.log
+    type: sshd
+
+  # Fedora / RHEL / CentOS / Amazon Linux — uncomment if applicable:
+  # - path: /var/log/secure
+  #   type: sshd
+
+  # Alpine Linux (busybox syslog) — uncomment if applicable:
+  # - path: /var/log/messages
+  #   type: sshd

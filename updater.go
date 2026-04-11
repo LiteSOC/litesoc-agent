@@ -81,8 +81,16 @@ var selfUpdate = func(info *updateInfo) error {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	// 5. Atomic replace — rename temp binary over the running one.
-	//    On Linux the running process keeps its fd; the new file is used on restart.
+	// 5. Stage the new binary to /tmp (always writable by the service user).
+	//    The final install into the system path uses 'sudo cp' which requires
+	//    the narrow sudoers rule written by install.sh:
+	//      litesoc ALL=(root) NOPASSWD: /usr/bin/cp /tmp/litesoc-agent-update ...
+	const stagePath = "/tmp/litesoc-agent-update"
+	if err := copyFile(binaryPath, stagePath); err != nil {
+		return fmt.Errorf("stage binary: %w", err)
+	}
+	defer os.Remove(stagePath)
+
 	currentBinary, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve current binary path: %w", err)
@@ -92,15 +100,16 @@ var selfUpdate = func(info *updateInfo) error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 
-	// Copy instead of rename (may be across filesystems: /tmp → /usr/local/bin).
-	if err := copyFile(binaryPath, currentBinary); err != nil {
-		return fmt.Errorf("replace binary: %w", err)
-	}
-
-	slog.Info("self-update: binary replaced, restarting service",
-		"path", currentBinary,
+	slog.Info("self-update: installing binary",
+		"stage", stagePath,
+		"dest", currentBinary,
 		"new_version", info.LatestVersion,
 	)
+
+	// Privileged copy — needs: litesoc ALL=(root) NOPASSWD: /usr/bin/cp /tmp/litesoc-agent-update <dest>
+	if out, err := exec.Command("sudo", "cp", stagePath, currentBinary).CombinedOutput(); err != nil {
+		return fmt.Errorf("replace binary (sudo cp): %w: %s", err, strings.TrimSpace(string(out)))
+	}
 
 	// 6. Restart via systemctl — this kills the current process.
 	return restartService()
@@ -109,8 +118,12 @@ var selfUpdate = func(info *updateInfo) error {
 // restartService asks systemd to restart litesoc-agent.
 // Declared as var so tests can stub it.
 var restartService = func() error {
-	cmd := exec.Command("systemctl", "restart", "litesoc-agent")
-	return cmd.Run()
+	cmd := exec.Command("sudo", "systemctl", "restart", "litesoc-agent")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl restart: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // downloadFile fetches a URL and writes it to disk.

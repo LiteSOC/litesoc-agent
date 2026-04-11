@@ -180,6 +180,16 @@ if getent group adm &>/dev/null; then
   ok "Added '${AGENT_USER}' to 'adm' group (required for /var/log/auth.log access)"
 fi
 
+# Allow the agent to self-update: narrow sudoers rule for cp + systemctl restart only.
+SUDOERS_FILE="/etc/sudoers.d/litesoc-agent"
+CP_PATH="$(command -v cp)"
+SYSTEMCTL_PATH="$(command -v systemctl)"
+cat > "${SUDOERS_FILE}" <<SUDOERS
+${AGENT_USER} ALL=(root) NOPASSWD: ${CP_PATH} /tmp/litesoc-agent-update ${INSTALL_PATH}, ${SYSTEMCTL_PATH} restart litesoc-agent
+SUDOERS
+chmod 0440 "${SUDOERS_FILE}"
+ok "Sudoers rule written to ${SUDOERS_FILE} (allows self-update only)"
+
 # Create config directory and store the key in an env file (chmod 600).
 mkdir -p "${CONFIG_DIR}"
 ROLLBACK_STEPS+=("rm -rf '${CONFIG_DIR}'")

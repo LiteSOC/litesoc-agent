@@ -136,19 +136,118 @@ sudo journalctl -u litesoc-agent -f
 
 ## Development
 
+**Prerequisites:** Go 1.22+, [golangci-lint v2](https://golangci-lint.run/welcome/install/)
+
+### 1 — Tests
+
+Run the full test suite:
+
 ```bash
-# Run tests (100% coverage)
-go test ./... -race
-
-# Run with coverage report
-go test ./... -coverprofile=coverage.out && go tool cover -html=coverage.out
-
-# Lint (golangci-lint v2)
-golangci-lint run ./...
-
-# Benchmarks
-go test ./... -run='^$' -bench=. -benchmem
+go test ./... -count=1
 ```
+
+Expected output:
+
+```
+ok  github.com/litesoc/litesoc-agent  1.5s
+```
+
+### 2 — Coverage
+
+Generate a statement-level coverage report (100% required for all PRs):
+
+```bash
+go test ./... -coverprofile=coverage.out -count=1
+go tool cover -func=coverage.out
+```
+
+Open an interactive HTML report in your browser:
+
+```bash
+go tool cover -html=coverage.out
+```
+
+Expected total:
+
+```
+total: (statements) 100.0%
+```
+
+### 3 — Race Detector
+
+Verify there are no data races under concurrent execution:
+
+```bash
+go test ./... -race -count=1
+```
+
+All tests must pass with no `WARNING: DATA RACE` output.
+
+### 4 — Linter
+
+Run the full golangci-lint suite (mirrors CI):
+
+```bash
+golangci-lint run ./...
+```
+
+Expected output:
+
+```
+0 issues.
+```
+
+Key linters enabled: `errcheck`, `staticcheck`, `govet`, `unused`.
+
+### 5 — Benchmarks
+
+Measure the performance of hot-path functions (regex parsing, HTTP round-trips, YAML loading):
+
+```bash
+go test ./... -run='^$' -bench=. -benchmem -benchtime=3s
+```
+
+Sample output on Apple M4:
+
+```
+BenchmarkParseSSHDLine/FailedPassword-10    7722412    455 ns/op    562 B/op    8 allocs/op
+BenchmarkParseSSHDLine/Irrelevant-10       21969438    169 ns/op      0 B/op    0 allocs/op
+BenchmarkSendEvent-10                        109568  31463 ns/op   8152 B/op  101 allocs/op
+BenchmarkLoadConfig-10                       207363  17271 ns/op  11672 B/op  129 allocs/op
+```
+
+> Irrelevant log lines exit with zero allocations — the fast-exit path is fully optimised.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please follow these steps:
+
+1. **Fork** the repository and create a feature branch:
+   ```bash
+   git checkout -b feat/my-feature
+   ```
+
+2. **Make your changes** — keep commits small and focused.
+
+3. **Run the full quality gate** before opening a PR:
+   ```bash
+   go test ./... -race -count=1                        # all tests + race detector
+   go test ./... -coverprofile=coverage.out && \
+     go tool cover -func=coverage.out | grep total     # must show 100.0%
+   golangci-lint run ./...                             # must show 0 issues
+   ```
+
+4. **Open a Pull Request** against `main` with a clear description of what changed and why.
+
+### Guidelines
+
+- **Coverage:** Every new function or branch must be covered by a test. PRs that drop coverage below 100% will not be merged.
+- **No `console.log`:** Use the structured `slog` logger — never `fmt.Println` or `log.Print`.
+- **Naming:** Database/API payload keys use `snake_case`; Go variables use `camelCase`.
+- **New log parsers:** Add a new `type` value to `WatcherCfg` and implement a `parse<Type>Line` function alongside `parseSSHDLine`. Register it in `parseLine`.
+- **Security:** Never log or store the API key. It must only appear in request headers.
 
 ---
 

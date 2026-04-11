@@ -3,7 +3,7 @@
 # LiteSOC Agent — One-Line Installer
 # =============================================================================
 # Usage:
-#   curl -sSL https://get.litesoc.io/agent | \
+#   curl -sSL https://litesoc.io/install.sh | \
 #     LITESOC_KEY=lsoc_live_xxx \
 #     bash
 #

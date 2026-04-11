@@ -50,7 +50,7 @@ func BenchmarkParseSSHDLine(b *testing.B) {
 	for _, tc := range benchLines {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				parseSSHDLine(tc.line, "/var/log/auth.log")
 			}
 		})
@@ -62,9 +62,8 @@ func BenchmarkParseSSHDLine(b *testing.B) {
 func BenchmarkParseSSHDLine_All(b *testing.B) {
 	b.ReportAllocs()
 	n := len(benchLines)
-	for b.Loop() {
-		i := b.N % n // pick a line per iteration
-		parseSSHDLine(benchLines[i].line, "/var/log/auth.log")
+	for i := 0; i < b.N; i++ {
+		parseSSHDLine(benchLines[i%n].line, "/var/log/auth.log")
 	}
 }
 
@@ -76,7 +75,7 @@ func BenchmarkParseLine(b *testing.B) {
 	lt := newTestTailer("sshd")
 	line := "Apr 11 12:00:01 myhost sshd[1234]: Failed password for root from 192.168.1.10 port 54321 ssh2"
 	b.ReportAllocs()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		lt.parseLine(line)
 	}
 }
@@ -85,7 +84,7 @@ func BenchmarkParseLine_UnknownType(b *testing.B) {
 	lt := newTestTailer("nginx")
 	line := "Apr 11 12:00:01 myhost sshd[1234]: Accepted publickey for bob from 10.0.0.1 port 22 ssh2"
 	b.ReportAllocs()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		lt.parseLine(line)
 	}
 }
@@ -120,7 +119,7 @@ func BenchmarkSendEvent(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		_ = lt.sendEvent(ctx, payload)
 	}
 }
@@ -141,7 +140,7 @@ func BenchmarkSendHeartbeat(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		sendHeartbeat(ctx, cfg, "lsoc_live_benchkey", client)
 	}
 }
@@ -154,7 +153,7 @@ func BenchmarkLoadConfig(b *testing.B) {
 	path := writeTempConfig(b, "api_endpoint: https://api.litesoc.io\nheartbeat_interval: 30\nlog_watchers:\n  - path: /var/log/auth.log\n    type: sshd\n  - path: /var/log/secure\n    type: sshd\n")
 	b.ReportAllocs()
 	b.ResetTimer()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		_, _ = loadConfig(path)
 	}
 }

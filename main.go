@@ -137,6 +137,12 @@ func runHeartbeat(ctx context.Context, cfg *Config, apiKey string) {
 }
 
 func main() {
+	// Handle --version before anything else (no env vars needed).
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("litesoc-agent " + agentVersion)
+		return
+	}
+
 	// Structured JSON logging — no raw console.log equivalents.
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

@@ -154,7 +154,11 @@ tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}" "${BINARY_NAME}" \
 # Install the binary.
 install -m 0755 -o root -g root "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_PATH}"
 ROLLBACK_STEPS+=("rm -f '${INSTALL_PATH}'")
-ok "Binary installed to ${INSTALL_PATH}"
+
+# Resolve the actual version baked into the binary (strips any leading 'v').
+INSTALLED_VERSION=$("${INSTALL_PATH}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "${RELEASE_VERSION}")
+
+ok "Binary installed to ${INSTALL_PATH} (${INSTALLED_VERSION})"
 
 # =============================================================================
 # STEP 3 — Configure the system service (systemd + low-privilege user)
@@ -284,7 +288,7 @@ HEARTBEAT_STATUS=$(curl -sSo /dev/null -w "%{http_code}" --max-time 8 \
   -X POST "https://api.litesoc.io/agent/heartbeat" \
   -H "X-API-Key: ${LITESOC_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"hostname":"'"${PROBE_HOSTNAME}"'","ip_address":"'"${PROBE_IP}"'","agent_version":"'"${RELEASE_VERSION}"'"}' 2>/dev/null || echo "000")
+  -d '{"hostname":"'"${PROBE_HOSTNAME}"'","ip_address":"'"${PROBE_IP}"'","agent_version":"'"${INSTALLED_VERSION}"'"}' 2>/dev/null || echo "000")
 
 if [[ "${HEARTBEAT_STATUS}" == "200" || "${HEARTBEAT_STATUS}" == "202" ]]; then
   ok "Heartbeat acknowledged by LiteSOC (HTTP ${HEARTBEAT_STATUS})"

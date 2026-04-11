@@ -38,7 +38,7 @@ A periodic heartbeat keeps your dashboard server status accurate and alerts you 
 ### One-Line Install (Linux)
 
 ```bash
-curl -sSL https://get.litesoc.io/agent | LITESOC_AGENT_KEY=lsoc_live_xxx bash
+curl -sSL https://litesoc.io/install.sh | LITESOC_AGENT_KEY=lsoc_live_xxx bash
 ```
 
 The installer will:

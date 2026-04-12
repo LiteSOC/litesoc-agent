@@ -183,7 +183,7 @@ func TestRunHeartbeat_StopsOnContextCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runHeartbeat(ctx, cfg, "lsoc_live_testkey")
+		runHeartbeat(ctx, cfg, "lsoc_live_testkey", heartbeatActiveInterval, heartbeatIdleInterval, heartbeatIdleThreshold)
 		close(done)
 	}()
 
@@ -206,15 +206,8 @@ func TestSendHeartbeat_MarshalError(t *testing.T) {
 }
 
 func TestRunHeartbeat_TickerFires(t *testing.T) {
-	// Override both adaptive intervals to 1s so the test runs quickly.
-	origActive := heartbeatActiveInterval
-	origIdle := heartbeatIdleInterval
-	defer func() {
-		heartbeatActiveInterval = origActive
-		heartbeatIdleInterval = origIdle
-	}()
-	heartbeatActiveInterval = time.Second
-	heartbeatIdleInterval = time.Second
+	// Both adaptive intervals set to 1s so the test runs quickly.
+	const tickInterval = time.Second
 
 	received := make(chan struct{}, 10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +225,7 @@ func TestRunHeartbeat_TickerFires(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runHeartbeat(ctx, cfg, "key")
+		runHeartbeat(ctx, cfg, "key", tickInterval, tickInterval, heartbeatIdleThreshold)
 		close(done)
 	}()
 
@@ -587,18 +580,12 @@ func TestIsActive_StaleEventReturnsFalse(t *testing.T) {
 // TestRunHeartbeat_UsesActiveInterval verifies that runHeartbeat uses
 // heartbeatActiveInterval when markActivity() has been called recently.
 func TestRunHeartbeat_UsesActiveInterval(t *testing.T) {
-	origActive := heartbeatActiveInterval
-	origIdle := heartbeatIdleInterval
-	origThreshold := heartbeatIdleThreshold
-	defer func() {
-		heartbeatActiveInterval = origActive
-		heartbeatIdleInterval = origIdle
-		heartbeatIdleThreshold = origThreshold
-	}()
 	// Active = 100ms, idle = 10s (will never fire during this test).
-	heartbeatActiveInterval = 100 * time.Millisecond
-	heartbeatIdleInterval = 10 * time.Second
-	heartbeatIdleThreshold = time.Minute
+	const (
+		activeInterval = 100 * time.Millisecond
+		idleInterval   = 10 * time.Second
+		idleThreshold  = time.Minute
+	)
 
 	// Simulate a recent security event.
 	markActivity()
@@ -616,7 +603,9 @@ func TestRunHeartbeat_UsesActiveInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() { runHeartbeat(ctx, &Config{APIEndpoint: srv.URL}, "key") }()
+	go func() {
+		runHeartbeat(ctx, &Config{APIEndpoint: srv.URL}, "key", activeInterval, idleInterval, idleThreshold)
+	}()
 
 	// Expect at least 2 calls (initial + one active-interval tick) within 1s.
 	for i := 0; i < 2; i++ {
@@ -631,18 +620,12 @@ func TestRunHeartbeat_UsesActiveInterval(t *testing.T) {
 // TestRunHeartbeat_UsesIdleInterval verifies that runHeartbeat uses
 // heartbeatIdleInterval when no events have been seen recently.
 func TestRunHeartbeat_UsesIdleInterval(t *testing.T) {
-	origActive := heartbeatActiveInterval
-	origIdle := heartbeatIdleInterval
-	origThreshold := heartbeatIdleThreshold
-	defer func() {
-		heartbeatActiveInterval = origActive
-		heartbeatIdleInterval = origIdle
-		heartbeatIdleThreshold = origThreshold
-	}()
 	// Idle = 100ms, active = 10s (unreachable; lastEventAt cleared to 0).
-	heartbeatActiveInterval = 10 * time.Second
-	heartbeatIdleInterval = 100 * time.Millisecond
-	heartbeatIdleThreshold = time.Millisecond // instant expiry
+	const (
+		activeInterval = 10 * time.Second
+		idleInterval   = 100 * time.Millisecond
+		idleThreshold  = time.Millisecond // instant expiry
+	)
 
 	// Clear any recent activity.
 	lastEventAt.Store(0)
@@ -660,7 +643,9 @@ func TestRunHeartbeat_UsesIdleInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() { runHeartbeat(ctx, &Config{APIEndpoint: srv.URL}, "key") }()
+	go func() {
+		runHeartbeat(ctx, &Config{APIEndpoint: srv.URL}, "key", activeInterval, idleInterval, idleThreshold)
+	}()
 
 	// Expect at least 2 calls (initial + one idle-interval tick) within 1s.
 	for i := 0; i < 2; i++ {

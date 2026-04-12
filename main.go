@@ -222,7 +222,7 @@ func sendHeartbeat(ctx context.Context, cfg *Config, apiKey string, client *http
 	}
 }
 
-func runHeartbeat(ctx context.Context, cfg *Config, apiKey string) {
+func runHeartbeat(ctx context.Context, cfg *Config, apiKey string, activeInterval, idleInterval, idleThreshold time.Duration) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Fire immediately on startup so the dashboard shows the agent as Active.
@@ -232,9 +232,11 @@ func runHeartbeat(ctx context.Context, cfg *Config, apiKey string) {
 		// Pick the interval based on whether security events have been seen
 		// recently. This reduces API calls from once/minute to once/5-minutes
 		// when the monitored host is quiet, cutting heartbeat costs by ~80%.
-		interval := heartbeatIdleInterval
-		if isActive() {
-			interval = heartbeatActiveInterval
+		// Use the passed parameters directly to avoid races on package-level vars.
+		ts := lastEventAt.Load()
+		interval := idleInterval
+		if ts != 0 && time.Since(time.Unix(0, ts)) < idleThreshold {
+			interval = activeInterval
 		}
 
 		select {
@@ -306,7 +308,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		runHeartbeat(ctx, cfg, apiKey)
+		runHeartbeat(ctx, cfg, apiKey, heartbeatActiveInterval, heartbeatIdleInterval, heartbeatIdleThreshold)
 	}()
 
 	// Block until SIGINT or SIGTERM.

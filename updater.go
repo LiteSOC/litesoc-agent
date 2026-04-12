@@ -10,10 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -33,10 +33,14 @@ type heartbeatResponse struct {
 }
 
 // selfUpdate downloads the new binary, verifies its checksum, atomically
-// replaces the running binary, and restarts the systemd service.
+// replaces the running binary, and restarts via systemd.
 //
-// This function only returns on error — a successful update restarts the
-// process via systemd before it returns.
+// The binary at destPath must be owned by the service user (set by install.sh)
+// and the systemd unit must list it in ReadWritePaths= so that ProtectSystem=strict
+// allows the write. No sudo or privilege escalation is required.
+//
+// This function only returns on error — a successful update sends SIGTERM to
+// the current process and systemd (Restart=always) starts the new binary.
 var selfUpdate = func(info *updateInfo) error {
 	if info == nil || info.DownloadURL == "" {
 		return fmt.Errorf("missing download URL")
@@ -81,10 +85,8 @@ var selfUpdate = func(info *updateInfo) error {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	// 5. Stage the new binary to /tmp (always writable by the service user).
-	//    The final install into the system path uses 'sudo cp' which requires
-	//    the narrow sudoers rule written by install.sh:
-	//      litesoc ALL=(root) NOPASSWD: /usr/bin/cp /tmp/litesoc-agent-update ...
+	// 5. Stage the new binary to /tmp (always writable, even with PrivateTmp=true).
+	//    installBinary then overwrites the destination in-place; no sudo needed.
 	const stagePath = "/tmp/litesoc-agent-update"
 	if err := copyFile(binaryPath, stagePath); err != nil {
 		return fmt.Errorf("stage binary: %w", err)
@@ -118,23 +120,38 @@ var selfUpdate = func(info *updateInfo) error {
 // restartService asks systemd to restart litesoc-agent.
 // Declared as var so tests can stub it.
 var restartService = func() error {
-	cmd := exec.Command("sudo", "systemctl", "restart", "litesoc-agent")
-	out, err := cmd.CombinedOutput()
+	// Send SIGTERM to ourselves. systemd (Restart=always) will immediately start
+	// the freshly-installed binary. This avoids 'sudo systemctl restart' which
+	// is blocked by NoNewPrivileges=true in the service unit.
+	p, err := os.FindProcess(os.Getpid())
 	if err != nil {
-		return fmt.Errorf("systemctl restart: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("find self process: %w", err)
 	}
-	return nil
+	return p.Signal(syscall.SIGTERM)
 }
 
 var (
 	osExecutable  = os.Executable
 	evalSymlinks  = filepath.EvalSymlinks
 	installBinary = func(stagePath, destPath string) error {
-		out, err := exec.Command("sudo", "cp", stagePath, destPath).CombinedOutput()
+		// Open the destination binary in-place and overwrite it. The file is owned
+		// by the service user (set by install.sh) and listed in ReadWritePaths=
+		// so ProtectSystem=strict allows the write without privilege escalation.
+		src, err := os.Open(stagePath)
 		if err != nil {
-			return fmt.Errorf("replace binary (sudo cp): %w: %s", err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("open stage: %w", err)
 		}
-		return nil
+		defer func() { _ = src.Close() }()
+
+		dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_TRUNC, 0755)
+		if err != nil {
+			return fmt.Errorf("open dest for write: %w", err)
+		}
+		if _, err := io.Copy(dst, src); err != nil {
+			_ = dst.Close()
+			return fmt.Errorf("write binary: %w", err)
+		}
+		return dst.Close()
 	}
 )
 

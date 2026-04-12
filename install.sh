@@ -152,7 +152,7 @@ tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}" "${BINARY_NAME}" \
   || die "Binary not found in archive. The release package may be malformed."
 
 # Install the binary.
-install -m 0755 -o root -g root "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_PATH}"
+install -m 0755 -o "${AGENT_USER}" -g root "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_PATH}"
 ROLLBACK_STEPS+=("rm -f '${INSTALL_PATH}'")
 
 # Resolve the actual version baked into the binary (strips any leading 'v').
@@ -180,15 +180,15 @@ if getent group adm &>/dev/null; then
   ok "Added '${AGENT_USER}' to 'adm' group (required for /var/log/auth.log access)"
 fi
 
-# Allow the agent to self-update: narrow sudoers rule for cp + systemctl restart only.
+# Remove the legacy sudoers rule if present — self-update no longer uses sudo
+# because the binary is owned by '${AGENT_USER}' and ReadWritePaths= in the
+# systemd unit allows the service to overwrite it directly.
 SUDOERS_FILE="/etc/sudoers.d/litesoc-agent"
-CP_PATH="$(command -v cp)"
-SYSTEMCTL_PATH="$(command -v systemctl)"
-cat > "${SUDOERS_FILE}" <<SUDOERS
-${AGENT_USER} ALL=(root) NOPASSWD: ${CP_PATH} /tmp/litesoc-agent-update ${INSTALL_PATH}, ${SYSTEMCTL_PATH} restart litesoc-agent
-SUDOERS
-chmod 0440 "${SUDOERS_FILE}"
-ok "Sudoers rule written to ${SUDOERS_FILE} (allows self-update only)"
+if [[ -f "${SUDOERS_FILE}" ]]; then
+  rm -f "${SUDOERS_FILE}"
+  ok "Removed legacy sudoers rule (${SUDOERS_FILE})"
+fi
+ok "Binary is owned by '${AGENT_USER}' — self-update uses direct write (no sudo required)"
 
 # Create config directory and store the key in an env file (chmod 600).
 mkdir -p "${CONFIG_DIR}"
@@ -260,7 +260,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log
+ReadWritePaths=/var/log ${INSTALL_PATH}
 AmbientCapabilities=
 CapabilityBoundingSet=
 

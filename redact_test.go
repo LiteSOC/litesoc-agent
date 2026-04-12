@@ -30,21 +30,21 @@ func TestIsPasswordLike_PlainUsernamesAreNotRedacted(t *testing.T) {
 
 func TestIsPasswordLike_PasswordPatternsAreDetected(t *testing.T) {
 	passwords := []string{
-		"P@ssw0rd",         // letter+symbol+alphanumeric
-		"S3cur!ty",         // letter+symbol+alphanumeric
-		"hunter2!",         // ends with symbol
-		"!admin",           // starts with symbol
-		"P@$$word",         // two consecutive symbols
-		"p4$$w0rd",         // two consecutive symbols
-		"Tr0ub4dor&3",      // ampersand in middle
-		"correct#horse",    // hash in middle
-		"abc@def",          // at-sign between words
-		"pass!word",        // exclamation in word
-		"12345$6789",       // dollar sign
-		"admin^1",          // caret
-		"$$uperSecret",     // leading double symbol
-		"my+passw0rd",      // plus sign mixed
-		"secret~pass",      // tilde mixed
+		"P@ssw0rd",      // letter+symbol+alphanumeric
+		"S3cur!ty",      // letter+symbol+alphanumeric
+		"hunter2!",      // ends with symbol
+		"!admin",        // starts with symbol
+		"P@$$word",      // two consecutive symbols
+		"p4$$w0rd",      // two consecutive symbols
+		"Tr0ub4dor&3",   // ampersand in middle
+		"correct#horse", // hash in middle
+		"abc@def",       // at-sign between words
+		"pass!word",     // exclamation in word
+		"12345$6789",    // dollar sign
+		"admin^1",       // caret
+		"$$uperSecret",  // leading double symbol
+		"my+passw0rd",   // plus sign mixed
+		"secret~pass",   // tilde mixed
 	}
 	for _, p := range passwords {
 		if !isPasswordLike(p) {

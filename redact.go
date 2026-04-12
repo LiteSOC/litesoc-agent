@@ -32,15 +32,15 @@ var rePasswordLike = regexp.MustCompile(
 var privateIPNets = func() []*net.IPNet {
 	var nets []*net.IPNet
 	for _, cidr := range []string{
-		"10.0.0.0/8",       // RFC 1918
-		"172.16.0.0/12",    // RFC 1918
-		"192.168.0.0/16",   // RFC 1918
-		"127.0.0.0/8",      // loopback
-		"::1/128",          // IPv6 loopback
-		"169.254.0.0/16",   // link-local (IPv4)
-		"fe80::/10",        // link-local (IPv6)
-		"100.64.0.0/10",    // CGNAT (RFC 6598)
-		"fc00::/7",         // unique local (IPv6)
+		"10.0.0.0/8",     // RFC 1918
+		"172.16.0.0/12",  // RFC 1918
+		"192.168.0.0/16", // RFC 1918
+		"127.0.0.0/8",    // loopback
+		"::1/128",        // IPv6 loopback
+		"169.254.0.0/16", // link-local (IPv4)
+		"fe80::/10",      // link-local (IPv6)
+		"100.64.0.0/10",  // CGNAT (RFC 6598)
+		"fc00::/7",       // unique local (IPv6)
 	} {
 		_, n, err := net.ParseCIDR(cidr)
 		if err != nil {

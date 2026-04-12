@@ -19,6 +19,13 @@ const (
 	eventAuthLogout       = "auth.logout"
 )
 
+// batchSize is the number of buffered events that triggers an immediate flush.
+const batchSize = 50
+
+// batchFlushInterval is the maximum time events are held in the buffer before
+// being sent. Overridable in tests.
+var batchFlushInterval = 20 * time.Second
+
 // Compiled regexes for /var/log/auth.log (syslog sshd format).
 //
 // Patterns match the most common OpenSSH log lines across Debian, Ubuntu,
@@ -58,6 +65,11 @@ type IngestPayload struct {
 // IngestActor carries the subject identity of the security event.
 type IngestActor struct {
 	ID string `json:"id,omitempty"`
+}
+
+// BatchPayload is the JSON body sent to api.litesoc.io/collect/batch.
+type BatchPayload struct {
+	Events []IngestPayload `json:"events"`
 }
 
 // LogTailer follows a single log file and forwards parsed events to LiteSOC.
@@ -103,6 +115,11 @@ var newTailSrc = func(path string, cfg tail.Config) (*tailSrc, error) {
 // Run tails the log file and blocks until ctx is cancelled or a fatal error
 // occurs. It handles log rotation via ReOpen and uses inotify (not polling)
 // to keep CPU usage negligible.
+//
+// Parsed events are buffered in memory and sent as a batch to /collect/batch
+// whenever the buffer reaches batchSize (50) OR batchFlushInterval (20 s)
+// elapses — whichever comes first. This reduces per-event HTTP overhead and
+// API costs significantly under normal load.
 func (lt *LogTailer) Run(ctx context.Context) error {
 	src, err := newTailSrc(lt.watcher.Path, tail.Config{
 		Follow:    true,
@@ -118,12 +135,42 @@ func (lt *LogTailer) Run(ctx context.Context) error {
 
 	slog.Info("watching log file", "path", lt.watcher.Path, "type", lt.watcher.Type)
 
+	var buffer []IngestPayload
+	ticker := time.NewTicker(batchFlushInterval)
+	defer ticker.Stop()
+
+	// flush sends all buffered events as a single batch request and resets
+	// the buffer. fctx allows callers to use a different context for the
+	// final shutdown flush after the main ctx has been cancelled.
+	flush := func(fctx context.Context) {
+		if len(buffer) == 0 {
+			return
+		}
+		batch := BatchPayload{Events: buffer}
+		buffer = nil
+		if err := lt.sendBatch(fctx, batch); err != nil {
+			slog.Warn("failed to send batch",
+				"count", len(batch.Events),
+				"error", err,
+			)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Best-effort: deliver any buffered events before exiting.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			flush(shutdownCtx)
 			return nil
+
+		case <-ticker.C:
+			flush(ctx)
+
 		case line, ok := <-src.lines:
 			if !ok {
+				flush(ctx)
 				return nil
 			}
 			if line.Err != nil {
@@ -131,13 +178,16 @@ func (lt *LogTailer) Run(ctx context.Context) error {
 				continue
 			}
 			if event := lt.parseLine(line.Text); event != nil {
+				// Stamp source hostname once here so every event in the
+				// batch already carries it (sendBatch does not re-stamp).
+				if event.Metadata == nil {
+					event.Metadata = make(map[string]any)
+				}
+				event.Metadata["source_hostname"] = getHostname()
 				pushRecentLog(line.Text)
-				if err := lt.sendEvent(ctx, event); err != nil {
-					slog.Warn("failed to send event",
-						"event", event.Event,
-						"user_ip", event.UserIP,
-						"error", err,
-					)
+				buffer = append(buffer, *event)
+				if len(buffer) >= batchSize {
+					flush(ctx)
 				}
 			}
 		}
@@ -216,6 +266,37 @@ func parseSSHDLine(line, logPath string) *IngestPayload {
 		}
 	}
 
+	return nil
+}
+
+// sendBatch POSTs a slice of events to the LiteSOC Batch Ingestion endpoint.
+// Events must already have source_hostname stamped before calling this.
+func (lt *LogTailer) sendBatch(ctx context.Context, batch BatchPayload) error {
+	body, err := marshalJSON(batch)
+	if err != nil {
+		return fmt.Errorf("marshal batch: %w", err)
+	}
+
+	url := lt.cfg.APIEndpoint + "/collect/batch"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build batch request: %w", err)
+	}
+	req.Header.Set("X-API-Key", lt.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "litesoc-agent/"+agentVersion)
+
+	resp, err := lt.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status %d from batch ingestion API", resp.StatusCode)
+	}
+
+	slog.Debug("batch forwarded", "count", len(batch.Events))
 	return nil
 }
 

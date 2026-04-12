@@ -356,16 +356,25 @@ func TestSendEvent_InvalidURL(t *testing.T) {
 }
 
 func TestLogTailerRun_ForwardsEvents(t *testing.T) {
+	// Shorten the flush interval so the 2 test events are delivered quickly
+	// without waiting the full 20-second production timer.
+	origInterval := batchFlushInterval
+	batchFlushInterval = 200 * time.Millisecond
+	defer func() { batchFlushInterval = origInterval }()
+
 	// Integration test: write sshd lines to a temp file, verify they reach the mock server.
 	var (
 		mu     sync.Mutex
 		events []IngestPayload
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var p IngestPayload
-		_ = json.NewDecoder(r.Body).Decode(&p)
+		if r.URL.Path != "/collect/batch" {
+			t.Errorf("Path = %s; want /collect/batch", r.URL.Path)
+		}
+		var batch BatchPayload
+		_ = json.NewDecoder(r.Body).Decode(&batch)
 		mu.Lock()
-		events = append(events, p)
+		events = append(events, batch.Events...)
 		mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -402,7 +411,7 @@ func TestLogTailerRun_ForwardsEvents(t *testing.T) {
 	_, _ = f.WriteString("Apr 11 12:01:00 host sshd[1]: Accepted publickey for alice from 10.0.0.1 port 22 ssh2\n")
 	_ = f.Close()
 
-	// Wait up to 3 s for both events to arrive.
+	// Wait up to 3 s for both events to arrive via the batch flush.
 	deadline := time.After(3 * time.Second)
 	for {
 		mu.Lock()
@@ -534,7 +543,7 @@ func TestLogTailerRun_LineError(t *testing.T) {
 	}
 }
 
-func TestLogTailerRun_SendEventError(t *testing.T) {
+func TestLogTailerRun_SendBatchError(t *testing.T) {
 	orig := newTailSrc
 	defer func() { newTailSrc = orig }()
 
@@ -547,7 +556,8 @@ func TestLogTailerRun_SendEventError(t *testing.T) {
 		return &tailSrc{lines: ch, stop: func() {}, clean: func() {}}, nil
 	}
 
-	// Point to a server that refuses connections so sendEvent fails.
+	// Point to a server that refuses connections so sendBatch fails.
+	// Run must return nil — batch errors are logged, not propagated.
 	lt := &LogTailer{
 		cfg:     &Config{APIEndpoint: "http://127.0.0.1:1"},
 		apiKey:  "key",
@@ -555,7 +565,241 @@ func TestLogTailerRun_SendEventError(t *testing.T) {
 		client:  &http.Client{Timeout: 100 * time.Millisecond},
 	}
 	if err := lt.Run(context.Background()); err != nil {
-		t.Errorf("Run must return nil even when sendEvent errors: %v", err)
+		t.Errorf("Run must return nil even when sendBatch errors: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// sendBatch unit tests
+// ---------------------------------------------------------------------------
+
+func TestSendBatch_Success(t *testing.T) {
+	var received BatchPayload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Method = %s; want POST", r.Method)
+		}
+		if r.URL.Path != "/collect/batch" {
+			t.Errorf("Path = %s; want /collect/batch", r.URL.Path)
+		}
+		if r.Header.Get("X-API-Key") != "lsoc_live_testkey" {
+			t.Errorf("X-API-Key wrong or missing")
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q; want application/json", ct)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	lt := &LogTailer{cfg: &Config{APIEndpoint: srv.URL}, apiKey: "lsoc_live_testkey", client: &http.Client{Timeout: 5 * time.Second}}
+	batch := BatchPayload{Events: []IngestPayload{
+		{Event: eventAuthLoginFailed, UserIP: "192.168.1.1", Actor: &IngestActor{ID: "root"}},
+		{Event: eventAuthLoginSuccess, UserIP: "10.0.0.1", Actor: &IngestActor{ID: "alice"}},
+	}}
+	if err := lt.sendBatch(context.Background(), batch); err != nil {
+		t.Fatalf("sendBatch error: %v", err)
+	}
+	if len(received.Events) != 2 {
+		t.Fatalf("server received %d events; want 2", len(received.Events))
+	}
+	assertEq(t, "events[0].event", eventAuthLoginFailed, received.Events[0].Event)
+	assertEq(t, "events[1].event", eventAuthLoginSuccess, received.Events[1].Event)
+}
+
+func TestSendBatch_Non2xxReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	lt := &LogTailer{cfg: &Config{APIEndpoint: srv.URL}, apiKey: "bad", client: &http.Client{Timeout: 5 * time.Second}}
+	if err := lt.sendBatch(context.Background(), BatchPayload{Events: []IngestPayload{{Event: eventAuthLoginFailed}}}); err == nil {
+		t.Fatal("expected error for 401, got nil")
+	}
+}
+
+func TestSendBatch_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	lt := &LogTailer{cfg: &Config{APIEndpoint: srv.URL}, client: &http.Client{Timeout: 5 * time.Second}}
+	if err := lt.sendBatch(context.Background(), BatchPayload{Events: []IngestPayload{{Event: eventAuthLoginFailed}}}); err == nil {
+		t.Fatal("expected error for 500, got nil")
+	}
+}
+
+func TestSendBatch_Unreachable(t *testing.T) {
+	lt := &LogTailer{cfg: &Config{APIEndpoint: "http://127.0.0.1:1"}, client: &http.Client{Timeout: 100 * time.Millisecond}}
+	if err := lt.sendBatch(context.Background(), BatchPayload{Events: []IngestPayload{{Event: eventAuthLoginFailed}}}); err == nil {
+		t.Fatal("expected error for unreachable server, got nil")
+	}
+}
+
+func TestSendBatch_CancelledContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	lt := &LogTailer{cfg: &Config{APIEndpoint: srv.URL}, apiKey: "key", client: &http.Client{Timeout: 5 * time.Second}}
+	if err := lt.sendBatch(ctx, BatchPayload{Events: []IngestPayload{{Event: eventAuthLoginFailed}}}); err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+}
+
+func TestSendBatch_InvalidURL(t *testing.T) {
+	lt := &LogTailer{
+		cfg:    &Config{APIEndpoint: "://invalid"},
+		apiKey: "key",
+		client: &http.Client{Timeout: 5 * time.Second},
+	}
+	if err := lt.sendBatch(context.Background(), BatchPayload{Events: []IngestPayload{{Event: eventAuthLoginFailed}}}); err == nil {
+		t.Fatal("expected error for invalid URL, got nil")
+	}
+}
+
+func TestSendBatch_MarshalError(t *testing.T) {
+	orig := marshalJSON
+	defer func() { marshalJSON = orig }()
+	marshalJSON = func(v any) ([]byte, error) { return nil, fmt.Errorf("mock marshal error") }
+
+	lt := &LogTailer{
+		cfg:    &Config{APIEndpoint: "http://127.0.0.1:1"},
+		apiKey: "key",
+		client: &http.Client{Timeout: 5 * time.Second},
+	}
+	if err := lt.sendBatch(context.Background(), BatchPayload{Events: []IngestPayload{{Event: eventAuthLoginFailed}}}); err == nil {
+		t.Fatal("expected error for marshal failure, got nil")
+	}
+}
+
+func TestSendBatch_UserAgentHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if want := "litesoc-agent/" + agentVersion; r.Header.Get("User-Agent") != want {
+			t.Errorf("User-Agent = %q; want %q", r.Header.Get("User-Agent"), want)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	lt := &LogTailer{cfg: &Config{APIEndpoint: srv.URL}, apiKey: "key", client: &http.Client{Timeout: 5 * time.Second}}
+	_ = lt.sendBatch(context.Background(), BatchPayload{Events: []IngestPayload{{Event: eventAuthLoginFailed}}})
+}
+
+// ---------------------------------------------------------------------------
+// Batch-trigger integration tests
+// ---------------------------------------------------------------------------
+
+// TestLogTailerRun_BatchesByCount verifies that exactly one POST is fired once
+// the buffer accumulates batchSize (50) events, without waiting for the timer.
+func TestLogTailerRun_BatchesByCount(t *testing.T) {
+	// Use a very long timer so only the count-trigger matters.
+	origInterval := batchFlushInterval
+	batchFlushInterval = 24 * time.Hour
+	defer func() { batchFlushInterval = origInterval }()
+
+	requests := make(chan int, 10) // receives event counts per POST
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch BatchPayload
+		_ = json.NewDecoder(r.Body).Decode(&batch)
+		requests <- len(batch.Events)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	orig := newTailSrc
+	defer func() { newTailSrc = orig }()
+
+	ch := make(chan *tail.Line, batchSize+1)
+	line := "Apr 11 12:00:01 host sshd[1]: Failed password for root from 1.2.3.4 port 22 ssh2"
+	for i := 0; i < batchSize; i++ {
+		ch <- &tail.Line{Text: line}
+	}
+	close(ch)
+	newTailSrc = func(_ string, _ tail.Config) (*tailSrc, error) {
+		return &tailSrc{lines: ch, stop: func() {}, clean: func() {}}, nil
+	}
+
+	lt := &LogTailer{
+		cfg:     &Config{APIEndpoint: srv.URL},
+		apiKey:  "key",
+		watcher: WatcherCfg{Path: "/var/log/auth.log", Type: "sshd"},
+		client:  &http.Client{Timeout: 5 * time.Second},
+	}
+	if err := lt.Run(context.Background()); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// Exactly one batch of batchSize events must have been flushed by the
+	// count trigger (channel-close flush sends 0 remaining events).
+	select {
+	case count := <-requests:
+		if count != batchSize {
+			t.Errorf("batch size = %d; want %d", count, batchSize)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for batch request")
+	}
+	// No second request should arrive.
+	select {
+	case extra := <-requests:
+		t.Errorf("unexpected second batch with %d events", extra)
+	default:
+	}
+}
+
+// TestLogTailerRun_BatchesByTimer verifies that a partial buffer (< batchSize)
+// is flushed once the timer fires.
+func TestLogTailerRun_BatchesByTimer(t *testing.T) {
+	origInterval := batchFlushInterval
+	batchFlushInterval = 150 * time.Millisecond
+	defer func() { batchFlushInterval = origInterval }()
+
+	requests := make(chan int, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch BatchPayload
+		_ = json.NewDecoder(r.Body).Decode(&batch)
+		requests <- len(batch.Events)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	orig := newTailSrc
+	defer func() { newTailSrc = orig }()
+
+	const eventCount = 3
+	ch := make(chan *tail.Line, eventCount+1)
+	line := "Apr 11 12:00:01 host sshd[1]: Failed password for root from 1.2.3.4 port 22 ssh2"
+	for i := 0; i < eventCount; i++ {
+		ch <- &tail.Line{Text: line}
+	}
+	// Do NOT close ch — keep Run alive so the timer fires.
+	newTailSrc = func(_ string, _ tail.Config) (*tailSrc, error) {
+		return &tailSrc{lines: ch, stop: func() {}, clean: func() {}}, nil
+	}
+
+	lt := &LogTailer{
+		cfg:     &Config{APIEndpoint: srv.URL},
+		apiKey:  "key",
+		watcher: WatcherCfg{Path: "/var/log/auth.log", Type: "sshd"},
+		client:  &http.Client{Timeout: 5 * time.Second},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = lt.Run(ctx) }()
+
+	// The timer should fire within ~150ms and deliver the 3-event batch.
+	select {
+	case count := <-requests:
+		if count != eventCount {
+			t.Errorf("batch size = %d; want %d", count, eventCount)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for timer-triggered batch flush")
 	}
 }
 

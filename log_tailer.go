@@ -185,6 +185,7 @@ func (lt *LogTailer) Run(ctx context.Context) error {
 				}
 				event.Metadata["source_hostname"] = getHostname()
 				pushRecentLog(line.Text)
+				markActivity() // signal runHeartbeat to use the active interval
 				buffer = append(buffer, *event)
 				if len(buffer) >= batchSize {
 					flush(ctx)

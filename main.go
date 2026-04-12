@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,6 +31,42 @@ var (
 		return net.DialTimeout("udp", "8.8.8.8:80", 2*time.Second)
 	}
 )
+
+// ============================================
+// Adaptive heartbeat
+// ============================================
+
+// heartbeatActiveInterval is the ping cadence used when security events have
+// been seen recently. Injectable for tests.
+var heartbeatActiveInterval = 60 * time.Second
+
+// heartbeatIdleInterval is the ping cadence used when the system is quiet.
+// Injectable for tests.
+var heartbeatIdleInterval = 5 * time.Minute
+
+// heartbeatIdleThreshold is how long since the last security event before the
+// agent is considered idle. Injectable for tests.
+var heartbeatIdleThreshold = 5 * time.Minute
+
+// lastEventAt stores the Unix nanoseconds of the most recent parsed security
+// event. Updated by markActivity(); read by isActive().
+var lastEventAt atomic.Int64
+
+// markActivity records that a security event was just observed. Called by
+// LogTailer.Run() whenever a log line produces an IngestPayload.
+func markActivity() {
+	lastEventAt.Store(time.Now().UnixNano())
+}
+
+// isActive returns true when a security event has been seen within the last
+// heartbeatIdleThreshold window, causing runHeartbeat to use the faster cadence.
+func isActive() bool {
+	ts := lastEventAt.Load()
+	if ts == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, ts)) < heartbeatIdleThreshold
+}
 
 // Config holds the full agent configuration loaded from config.yaml.
 type Config struct {
@@ -188,17 +225,22 @@ func sendHeartbeat(ctx context.Context, cfg *Config, apiKey string, client *http
 func runHeartbeat(ctx context.Context, cfg *Config, apiKey string) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Fire immediately on startup so the dashboard shows the agent as Active right away.
+	// Fire immediately on startup so the dashboard shows the agent as Active.
 	sendHeartbeat(ctx, cfg, apiKey, client)
 
-	ticker := time.NewTicker(time.Duration(cfg.HeartbeatInterval) * time.Second)
-	defer ticker.Stop()
-
 	for {
+		// Pick the interval based on whether security events have been seen
+		// recently. This reduces API calls from once/minute to once/5-minutes
+		// when the monitored host is quiet, cutting heartbeat costs by ~80%.
+		interval := heartbeatIdleInterval
+		if isActive() {
+			interval = heartbeatActiveInterval
+		}
+
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(interval):
 			sendHeartbeat(ctx, cfg, apiKey, client)
 		}
 	}
@@ -239,7 +281,8 @@ func main() {
 		"version", agentVersion,
 		"endpoint", cfg.APIEndpoint,
 		"watchers", len(cfg.LogWatchers),
-		"heartbeat_interval_s", cfg.HeartbeatInterval,
+		"heartbeat_active_s", int(heartbeatActiveInterval.Seconds()),
+		"heartbeat_idle_s", int(heartbeatIdleInterval.Seconds()),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

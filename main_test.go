@@ -206,6 +206,16 @@ func TestSendHeartbeat_MarshalError(t *testing.T) {
 }
 
 func TestRunHeartbeat_TickerFires(t *testing.T) {
+	// Override both adaptive intervals to 1s so the test runs quickly.
+	origActive := heartbeatActiveInterval
+	origIdle := heartbeatIdleInterval
+	defer func() {
+		heartbeatActiveInterval = origActive
+		heartbeatIdleInterval = origIdle
+	}()
+	heartbeatActiveInterval = time.Second
+	heartbeatIdleInterval = time.Second
+
 	received := make(chan struct{}, 10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -520,5 +530,144 @@ func TestSendHeartbeat_RecentLogsIncluded(t *testing.T) {
 	}
 	if received.RecentLogs[0] != "test log line 1" {
 		t.Errorf("RecentLogs[0] = %q", received.RecentLogs[0])
+	}
+}
+
+// ============================================
+// Adaptive heartbeat unit tests
+// ============================================
+
+func TestMarkActivity_SetsTimestamp(t *testing.T) {
+	lastEventAt.Store(0)
+	before := time.Now()
+	markActivity()
+	after := time.Now()
+
+	ts := lastEventAt.Load()
+	if ts == 0 {
+		t.Fatal("lastEventAt was not updated by markActivity()")
+	}
+	got := time.Unix(0, ts)
+	if got.Before(before) || got.After(after) {
+		t.Errorf("timestamp %v not in [%v, %v]", got, before, after)
+	}
+}
+
+func TestIsActive_NeverCalledReturnsFalse(t *testing.T) {
+	lastEventAt.Store(0)
+	if isActive() {
+		t.Error("isActive() = true before any markActivity(); want false")
+	}
+}
+
+func TestIsActive_RecentEventReturnsTrue(t *testing.T) {
+	origThreshold := heartbeatIdleThreshold
+	defer func() { heartbeatIdleThreshold = origThreshold }()
+	heartbeatIdleThreshold = time.Minute
+
+	markActivity()
+	if !isActive() {
+		t.Error("isActive() = false immediately after markActivity(); want true")
+	}
+}
+
+func TestIsActive_StaleEventReturnsFalse(t *testing.T) {
+	origThreshold := heartbeatIdleThreshold
+	defer func() { heartbeatIdleThreshold = origThreshold }()
+	heartbeatIdleThreshold = time.Millisecond // expire immediately
+
+	markActivity()
+	time.Sleep(5 * time.Millisecond) // let the threshold pass
+
+	if isActive() {
+		t.Error("isActive() = true after threshold elapsed; want false")
+	}
+}
+
+// TestRunHeartbeat_UsesActiveInterval verifies that runHeartbeat uses
+// heartbeatActiveInterval when markActivity() has been called recently.
+func TestRunHeartbeat_UsesActiveInterval(t *testing.T) {
+	origActive := heartbeatActiveInterval
+	origIdle := heartbeatIdleInterval
+	origThreshold := heartbeatIdleThreshold
+	defer func() {
+		heartbeatActiveInterval = origActive
+		heartbeatIdleInterval = origIdle
+		heartbeatIdleThreshold = origThreshold
+	}()
+	// Active = 100ms, idle = 10s (will never fire during this test).
+	heartbeatActiveInterval = 100 * time.Millisecond
+	heartbeatIdleInterval = 10 * time.Second
+	heartbeatIdleThreshold = time.Minute
+
+	// Simulate a recent security event.
+	markActivity()
+
+	received := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { runHeartbeat(ctx, &Config{APIEndpoint: srv.URL}, "key") }()
+
+	// Expect at least 2 calls (initial + one active-interval tick) within 1s.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for active-interval heartbeat %d", i+1)
+		}
+	}
+}
+
+// TestRunHeartbeat_UsesIdleInterval verifies that runHeartbeat uses
+// heartbeatIdleInterval when no events have been seen recently.
+func TestRunHeartbeat_UsesIdleInterval(t *testing.T) {
+	origActive := heartbeatActiveInterval
+	origIdle := heartbeatIdleInterval
+	origThreshold := heartbeatIdleThreshold
+	defer func() {
+		heartbeatActiveInterval = origActive
+		heartbeatIdleInterval = origIdle
+		heartbeatIdleThreshold = origThreshold
+	}()
+	// Idle = 100ms, active = 10s (unreachable; lastEventAt cleared to 0).
+	heartbeatActiveInterval = 10 * time.Second
+	heartbeatIdleInterval = 100 * time.Millisecond
+	heartbeatIdleThreshold = time.Millisecond // instant expiry
+
+	// Clear any recent activity.
+	lastEventAt.Store(0)
+
+	received := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { runHeartbeat(ctx, &Config{APIEndpoint: srv.URL}, "key") }()
+
+	// Expect at least 2 calls (initial + one idle-interval tick) within 1s.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for idle-interval heartbeat %d", i+1)
+		}
 	}
 }

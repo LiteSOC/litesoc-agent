@@ -178,6 +178,8 @@ func (lt *LogTailer) Run(ctx context.Context) error {
 				continue
 			}
 			if event := lt.parseLine(line.Text); event != nil {
+				// Redact sensitive fields before the payload leaves the host.
+				redactPayload(event)
 				// Stamp source hostname once here so every event in the
 				// batch already carries it (sendBatch does not re-stamp).
 				if event.Metadata == nil {
